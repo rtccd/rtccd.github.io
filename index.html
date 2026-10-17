@@ -69,6 +69,8 @@ const LABELS = {
   seven_day: "Week · all models",
   seven_day_opus: "Week · Opus",
   seven_day_sonnet: "Week · Sonnet",
+  seven_day_cowork: "Week · Cowork",
+  seven_day_oauth_apps: "Week · Connected apps",
 };
 const POLL_MS = 90_000, STALE_MS = 3 * 60_000;
 const app = document.getElementById("app");
@@ -182,7 +184,7 @@ function render(){
   }
 
   const u = data.usage || {};
-  const order = Object.keys(LABELS).concat(Object.keys(u).filter(k => !(k in LABELS)));
+  const order = Object.keys(LABELS);   // only known windows; ignore internal fields
   const html = order
     .filter(k => u[k] && typeof u[k] === "object" && typeof u[k].utilization === "number")
     .map((k, i) => {
