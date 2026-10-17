@@ -94,7 +94,7 @@ const LABELS = {
   seven_day_oauth_apps: "Week · Connected apps",
 };
 const SHORT = { five_hour: "Session", seven_day: "Week" };
-const POLL_MS = 120_000, STALE_MS = 3 * 60_000;   // GitHub allows 60 anonymous reads/hour per network
+const POLL_MS = 180_000, STALE_MS = 6 * 60_000;   // GitHub allows 60 anonymous reads/hour per network
 const RECENT_MS = 60 * 60_000, RECENT_MIN_MS = 15 * 60_000;   // recent rate: last hour, needs ≥15 min of data
 const app = document.getElementById("app");
 let gistId = location.hash.slice(1);
@@ -420,8 +420,8 @@ function tick(){
   if (data && data.updated_at) document.getElementById("ago").textContent = "Mac update " + fmtAgo(Date.now() - Date.parse(data.updated_at));
 }
 setInterval(tick, 15_000);
-const VERSION = "v5 · 17 Oct 12:20";
-document.getElementById("foot").textContent = `${VERSION} · refreshes every 2 min while open`;
+const VERSION = "v6 · 17 Oct 12:16";
+document.getElementById("foot").textContent = `${VERSION} · refreshes every 3 min while open`;
 poll();
 </script>
 </body>
