@@ -74,6 +74,7 @@
   .plan .v{font-size:16px;font-weight:700;font-variant-numeric:tabular-nums}
   .plan .today{background:color-mix(in srgb,var(--ok) 15%,var(--card));box-shadow:inset 0 0 0 1.5px color-mix(in srgb,var(--ok) 55%,transparent)}
   .plan .today .d{color:var(--ok);font-weight:650}
+  .plan .c{font-size:10.5px;color:var(--muted);margin-top:1px;white-space:nowrap}
   .legend{font-size:12px;color:var(--muted);margin-top:4px;text-align:center}
   .msg{color:var(--muted);text-align:center;padding:28px 8px}
   .msg b{color:var(--ink)}
@@ -198,18 +199,36 @@ function eta(k, used, end, rr){
   return { t, before: t < end, ...rr };
 }
 
-// ---- Remaining weekly allowance split per day, in proportion to working hours left that day ----
+// ---- Day plan: future days keep the normal allowance, today gets the rest ----
+// Normal allowance = 100% spread evenly over the week's working time (08–24, ≈112 h → ~14.3% per full day).
+// Surplus (you're under pace) goes to today. Deficit: today gets 0 and the next days shrink evenly.
 function dayPlan(left, end){
-  const now = Date.now(), total = workMs(now, end);
-  if (total <= 0) return [];
-  const out = [], d = new Date(now); d.setHours(0, 0, 0, 0);
+  const now = Date.now(), W = workMs(end - 7 * 24 * H, end);
+  if (W <= 0 || workMs(now, end) <= 0) return null;
+  const days = [], d = new Date(now); d.setHours(0, 0, 0, 0);
   for (let i = 0; i < 10 && d.getTime() < end; i++) {
     const next = new Date(d); next.setDate(next.getDate() + 1);
     const ms = workMs(Math.max(now, d.getTime()), Math.min(end, next.getTime()));
-    if (ms > 0) out.push({ day: new Date(d), i, share: left * ms / total, until: end < next.getTime() ? end : null });
+    if (ms > 0 || i === 0) days.push({ day: new Date(d), i, def: 100 * ms / W, until: end < next.getTime() ? end : null });
     d.setDate(d.getDate() + 1);
   }
-  return out;
+  const today = days[0], future = days.slice(1);
+  const futureDef = future.reduce((a, p) => a + p.def, 0);
+  let mode;
+  if (left >= futureDef) { mode = "surplus"; future.forEach(p => p.share = p.def); today.share = left - futureDef; }
+  else { mode = "deficit"; today.share = 0; future.forEach(p => p.share = p.def * left / futureDef); }
+  return { days, mode, today: today.share, perDay: 100 * DAY_WORK / W };
+}
+// Session-% you could still use before midnight if you worked nonstop (current session + new ones every 5 h)
+function sessionRoomToday(){
+  const u = data.usage && data.usage.five_hour;
+  if (!u || typeof u.utilization !== "number") return null;
+  const now = Date.now(), mid = new Date(now); mid.setHours(24, 0, 0, 0);
+  let room = 0, next = now;
+  const r = Date.parse(u.resets_at);
+  if (!isNaN(r) && r > now) { room += Math.max(0, 100 - u.utilization); next = r; }
+  if (next < mid.getTime()) room += 100 * Math.ceil((mid.getTime() - next) / (5 * H));
+  return room;
 }
 function dayName(p){
   if (p.i === 0) return "Today";
@@ -394,20 +413,32 @@ function headline(items){
   }
   const w = items.find(x => x.k === "seven_day" && x.pc);
   const s = items.find(x => x.k === "five_hour" && x.pc);
-  const plan = w ? dayPlan(100 - w.used, w.pc.end) : [];
-  const today = plan.length && plan[0].i === 0 ? plan[0].share : null;
-  const cost = sessionCost();
-  const todayTxt = today == null ? "" :
-    `Today you can use up to <b>${num(today)}%</b> of your week` + (cost ? ` (${sessions(today, cost)})` : "") + ".";
-  const dayTip = todayTxt;
+  const plan = w ? dayPlan(100 - w.used, w.pc.end) : null;
+  const cost = sessionCost(), room = sessionRoomToday();
+  const cap = cost && room != null ? room / 100 * cost : null;      // what the 5-hour limit lets you reach today
+  let todayTxt = "";
+  if (plan && plan.mode === "surplus") {
+    todayTxt = `Today you can use up to <b>${num(plan.today)}%</b> of your week` + (cost ? ` (${sessions(plan.today, cost)})` : "") + ".";
+    if (cap != null && cap < plan.today - 0.5) todayTxt += ` The 5-hour limit caps you at about <b>${num(cap)}%</b> before midnight.`;
+  }
+  const lastDay = plan && plan.days.length === 1;
+  const rollTxt = lastDay ? `Whatever is left resets at <b>${fmtWhen(w.pc.end)}</b>.` : "Whatever you don't use rolls over to tomorrow.";
+  let deficitTxt = "";
+  if (plan && plan.mode === "deficit") {
+    const nxt = plan.days.find(p => p.i > 0 && !p.until) || plan.days[1];
+    deficitTxt = `Nothing left for today without cutting into the next days` +
+      (nxt ? ` (now <b>~${num(nxt.share)}%</b> per full day instead of ${num(plan.perDay)}%).` : ".");
+    if (worst.sev < 1) worst = { sev: 1, it: w, msg: "You're ahead of your weekly pace." };
+  }
+  const dayTip = todayTxt || deficitTxt;
 
   let title, hue, sub;
-  if (worst.sev === 2) { title = "Slow down"; hue = 5; sub = worst.msg + (worst.it.k === "five_hour" ? "" : " " + dayTip); }
-  else if (worst.sev === 1) { title = "Pace yourself"; hue = 35; sub = worst.msg + " " + (worst.it.k === "five_hour" ? "" : dayTip); }
+  if (worst.sev === 2) { title = "Slow down"; hue = 5; sub = worst.msg + (worst.it && worst.it.k === "five_hour" ? "" : " " + dayTip); }
+  else if (worst.sev === 1) { title = "Pace yourself"; hue = 35; sub = worst.msg + " " + (worst.it && worst.it.k === "five_hour" ? "" : dayTip); }
   else {
     title = "Spend freely"; hue = 140;
     const parts = [];
-    if (todayTxt) parts.push(todayTxt, "Stop earlier and the rest moves to the next days.");
+    if (todayTxt) parts.push(todayTxt, rollTxt);
     else parts.push("Under pace on every window.");
     sub = parts.join(" ");
   }
@@ -435,10 +466,20 @@ function card(it, primary){
       if (k === "five_hour" && cost) rows.push(["Cost", `1 full session ≈ <b>${num(cost)}%</b> of your week`]);
     } else {
       const plan = dayPlan(left, pc.end);
-      if (k === "seven_day" && plan.length) {
-        planHtml = `<div class="plan-cap">Your remaining <b>${num(left)}%</b>, spread over the days left (08–24)</div>
-          <div class="plan">${plan.map(p => `<div class="${p.i === 0 ? "today" : ""}"><div class="d">${dayName(p)}${p.until ? ` →${new Date(p.until).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"})}` : ""}</div><div class="v">${Math.round(p.share)}%</div></div>`).join("")}</div>`;
-        if (plan[0].i === 0) rows.push(["Today", `<b>${num(plan[0].share)}%</b>` + (cost ? ` <span class="sub">· ${sessions(plan[0].share, cost)}</span>` : "")]);
+      if (k === "seven_day" && plan) {
+        const room = sessionRoomToday(), cap = cost && room != null ? room / 100 * cost : null;
+        const capped = cap != null && plan.mode === "surplus" && cap < plan.today - 0.5;
+        const cap1 = plan.days.length === 1
+          ? `Remaining <b>${num(left)}%</b> is all yours until the reset`
+          : plan.mode === "surplus"
+          ? `Remaining <b>${num(left)}%</b>: the next days keep the normal <b>${num(plan.perDay)}%</b> per full day, today gets the rest`
+          : `Remaining <b>${num(left)}%</b> is less than the normal share for the days left, so the next days are reduced`;
+        const t = (ms) => new Date(ms).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+        planHtml = `<div class="plan-cap">${cap1}</div>
+          <div class="plan">${plan.days.map(p => `<div class="${p.i === 0 ? "today" : ""}"><div class="d">${dayName(p)}${p.until ? ` →${t(p.until)}` : ""}</div><div class="v">${Math.round(p.share)}%</div>${p.i === 0 && capped ? `<div class="c">max ~${Math.round(cap)}%</div>` : ""}</div>`).join("")}</div>`;
+        rows.push(["Today", `<b>${num(plan.today)}%</b>` +
+          (cost && plan.today > 0 ? ` <span class="sub">· ${sessions(plan.today, cost)}</span>` : "") +
+          (capped ? ` <span class="sub">· 5-hour limit: ~${num(cap)}% before 24:00</span>` : "")]);
       } else {
         rows.push(["Left", `<b>${num(left)}%</b>`]);
       }
@@ -482,7 +523,7 @@ function tick(){
   if (data && data.updated_at) document.getElementById("ago").textContent = "Updated " + fmtAgo(Date.now() - Date.parse(data.updated_at));
 }
 setInterval(tick, 15_000);
-const VERSION = "v8 · 17 Oct 13:05";
+const VERSION = "v9 · 17 Oct 16:15";
 document.getElementById("foot").textContent = `${VERSION} · Mac checks every 3 min · page refreshes every 3 min`;
 poll();
 </script>
