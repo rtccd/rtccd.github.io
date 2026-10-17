@@ -66,6 +66,7 @@
   .kv dd .sub{color:var(--muted)}
   .kv dd.bad{color:var(--hot);font-weight:600}
   .kv dd.good{color:var(--ok)}
+  .kv dd.warn{color:var(--warn);font-weight:600}
 
   .plan-cap{font-size:12px;color:var(--muted);margin:12px 0 6px}
   .plan{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:6px;margin-bottom:12px}
@@ -268,6 +269,7 @@ function fmtWhen(t){
   if (d.toDateString() === tm.toDateString()) return `tomorrow ${time}`;
   return `${d.toLocaleDateString([], {weekday:"short"})} ${time}`;
 }
+function fmtApprox(t){ return fmtWhen(Math.round(t / 300_000) * 300_000); }   // nearest 5 min
 function num(x){ return x >= 10 ? Math.round(x).toString() : x.toFixed(1).replace(/\.0$/, ""); }
 
 // ---- Data loading ----
@@ -380,6 +382,7 @@ function render(){
       it.proj = it.pc.offHours ? used : cands.length ? Math.max(...cands) : null;
       it.state = it.pc.offHours ? 0 : stateFor(used, it.proj, it.pc.state);
       if (it.eta && it.eta.before && !it.pc.offHours) it.state = 3;   // runs out before reset at the current rate
+      if (!isSession(k)) it.wk = weekStatus(it);                      // weekly: judge today's budget instead
     }
     return it;
   });
@@ -395,114 +398,141 @@ function render(){
   tick();
 }
 
-function headline(items){
-  // severity per window: 2 = will run out / way over pace, 1 = heading over, 0 = fine
-  let worst = { sev: 0 };
-  for (const it of items) {
-    if (!it.pc) continue;
-    const name = SHORT[it.k] || LABELS[it.k];
-    let sev = 0, msg = "";
-    if (it.eta && it.eta.before && !it.pc.offHours) {
-      sev = 2; msg = `<b>${esc(name)}</b> runs out at <b>${fmtWhen(it.eta.t)}</b> at your last-hour rate, ${fmtDur(it.pc.end - it.eta.t)} before it resets.`;
-    } else if (it.state === 3) {
-      sev = 2; msg = `<b>${esc(name)}</b> is heading to <b>~${Math.round(it.proj ?? it.used)}%</b> by reset.`;
-    } else if (it.state === 2) {
-      sev = 1; msg = `<b>${esc(name)}</b> is heading to <b>~${Math.round(it.proj)}%</b> by reset.`;
-    }
-    if (sev > worst.sev) worst = { sev, msg, it };
+// ---- Weekly windows: judge today's budget, never a whole-week projection ----
+// level 0 = within today's budget, 1 = today's budget runs out before midnight, 2 = runs out within the hour / used up
+function weekStatus(it){
+  const now = Date.now(), plan = dayPlan(100 - it.used, it.pc.end);
+  if (!plan) return null;
+  const rate = it.eta && it.eta.rate > 0 ? it.eta.rate : 0;            // %/ms over the last hour
+  const mid = new Date(now); mid.setHours(24, 0, 0, 0);
+  const limit = Math.min(mid.getTime(), it.pc.end);                    // end of today, or the reset if sooner
+  const left = plan.mode === "surplus" ? plan.today : 0;
+  let level = 0, runsOut = null;
+  if (left <= 0.05) level = 2;
+  else if (rate > 0) {
+    runsOut = now + left / rate;
+    if (runsOut - now < H) level = 2; else if (runsOut < limit) level = 1;
   }
-  const w = items.find(x => x.k === "seven_day" && x.pc);
-  const s = items.find(x => x.k === "five_hour" && x.pc);
-  const plan = w ? dayPlan(100 - w.used, w.pc.end) : null;
-  const cost = sessionCost(), room = sessionRoomToday();
-  const cap = cost && room != null ? room / 100 * cost : null;      // what the 5-hour limit lets you reach today
-  let todayTxt = "";
-  if (plan && plan.mode === "surplus") {
-    todayTxt = `Today you can use up to <b>${num(plan.today)}%</b> of your week` + (cost ? ` (${sessions(plan.today, cost)})` : "") + ".";
-    if (cap != null && cap < plan.today - 0.5) todayTxt += ` The 5-hour limit caps you at about <b>${num(cap)}%</b> before midnight.`;
-  }
-  const lastDay = plan && plan.days.length === 1;
-  const rollTxt = lastDay ? `Whatever is left resets at <b>${fmtWhen(w.pc.end)}</b>.` : "Whatever you don't use rolls over to tomorrow.";
-  let deficitTxt = "";
-  if (plan && plan.mode === "deficit") {
-    const nxt = plan.days.find(p => p.i > 0 && !p.until) || plan.days[1];
-    deficitTxt = `Nothing left for today without cutting into the next days` +
-      (nxt ? ` (now <b>~${num(nxt.share)}%</b> per full day instead of ${num(plan.perDay)}%).` : ".");
-    if (worst.sev < 1) worst = { sev: 1, it: w, msg: "You're ahead of your weekly pace." };
-  }
-  const dayTip = todayTxt || deficitTxt;
+  const nxt = plan.days[1];
+  const after = plan.days.length === 1 ? ` Then the week is used up until the reset at ${fmtWhen(it.pc.end)}.`
+    : ` After that you'd dip into ${nxt && nxt.i === 1 ? `tomorrow's ${Math.round(nxt.share)}%` : "the next days' share"}.`;
+  return { plan, left, rate, runsOut, level, limit, after, lastDay: plan.days.length === 1 };
+}
+const WK_HUE = [140, 35, 5];
+function wkPill(wk){
+  if (wk.level === 0) return "Within today's budget";
+  if (wk.left <= 0.05) return wk.lastDay ? "Used up until the reset" : "Today's budget used up";
+  return wk.level === 2 ? `Today's budget runs out ~${fmtApprox(wk.runsOut)}` : `Today's budget lasts until ~${fmtApprox(wk.runsOut)}`;
+}
 
-  let title, hue, sub;
-  if (worst.sev === 2) { title = "Slow down"; hue = 5; sub = worst.msg + (worst.it && worst.it.k === "five_hour" ? "" : " " + dayTip); }
-  else if (worst.sev === 1) { title = "Pace yourself"; hue = 35; sub = worst.msg + " " + (worst.it && worst.it.k === "five_hour" ? "" : dayTip); }
-  else {
-    title = "Spend freely"; hue = 140;
-    const parts = [];
-    if (todayTxt) parts.push(todayTxt, rollTxt);
-    else parts.push("Under pace on every window.");
-    sub = parts.join(" ");
+function headline(items){
+  const w = items.find(x => x.k === "seven_day" && x.wk);
+  const cost = sessionCost(), room = sessionRoomToday();
+  const cap = cost && room != null ? room / 100 * cost : null;         // what the 5-hour limit lets you reach today
+  const msgs = [];
+
+  // 1) The 5-hour session: don't hit its limit before it resets
+  for (const it of items.filter(x => isSession(x.k) && x.pc && !x.pc.offHours)) {
+    const name = SHORT[it.k] || LABELS[it.k];
+    if (it.eta && it.eta.before)
+      msgs.push({ sev: 2, from: "session", text: `<b>${esc(name)}</b> runs out at <b>${fmtWhen(it.eta.t)}</b> at your last-hour rate, ${fmtDur(it.pc.end - it.eta.t)} before it resets at ${fmtWhen(it.pc.end)}.` });
+    else if (it.state >= 2)
+      msgs.push({ sev: it.state === 3 ? 2 : 1, from: "session", text: `<b>${esc(name)}</b> is heading to <b>~${Math.round(it.proj)}%</b> before it resets at ${fmtWhen(it.pc.end)}.` });
   }
+  // 2) Weekly windows: don't spend more than today's share
+  for (const it of items.filter(x => x.wk && x.wk.level > 0)) {
+    const wk = it.wk, what = it.k === "seven_day" ? "today's" : `today's ${esc(LABELS[it.k].replace("Week · ", ""))}`;
+    let text;
+    if (wk.left <= 0.05) {
+      if (wk.lastDay) text = `The week is used up until the reset at <b>${fmtWhen(it.pc.end)}</b>.`;
+      else {
+        const nxt = wk.plan.days.find(p => p.i > 0 && !p.until) || wk.plan.days[1];
+        text = `${what[0].toUpperCase() + what.slice(1)} budget is used up: anything more comes out of the next days` +
+          (nxt ? ` (now <b>~${num(nxt.share)}%</b> per full day instead of ${num(wk.plan.perDay)}%).` : ".");
+      }
+    } else {
+      text = `At your last-hour rate (<b>+${num(wk.rate * H)}%/h</b>), ${what} <b>${num(wk.left)}%</b> ` +
+        (wk.level === 2 ? `runs out at <b>${fmtWhen(wk.runsOut)}</b>.` : `lasts until <b>~${fmtApprox(wk.runsOut)}</b>.`) + wk.after;
+    }
+    msgs.push({ sev: wk.level, from: "week", text });
+  }
+
+  let todayTxt = "";
+  if (w && w.wk.left > 0.05) {
+    todayTxt = `Today you can use up to <b>${num(w.wk.left)}%</b> of your week` + (cost ? ` (${sessions(w.wk.left, cost)})` : "") + ".";
+    if (cap != null && cap < w.wk.left - 0.5) todayTxt += ` The 5-hour limit caps you at about <b>${num(cap)}%</b> before midnight.`;
+  }
+  const rollTxt = w && w.wk.lastDay ? `Whatever is left resets at <b>${fmtWhen(w.pc.end)}</b>.` : "Whatever you don't use rolls over to tomorrow.";
+
+  msgs.sort((a, b) => b.sev - a.sev);
+  const top = msgs[0];
+  let title, hue, sub;
+  if (top && top.sev === 2) { title = "Slow down"; hue = 5; }
+  else if (top && top.sev === 1) { title = top.from === "session" ? "Pace the session" : "Watch today's budget"; hue = 35; }
+  if (top) sub = top.text + (top.from === "session" && todayTxt ? " " + todayTxt : "");
+  else { title = "Spend freely"; hue = 140; sub = todayTxt ? `${todayTxt} ${rollTxt}` : "Within your limits on every window."; }
   return `<div class="card head" style="--c:${hueColor(hue)}">
     <div class="head-t"><span class="pdot"></span>${title}</div>
     <div class="head-s">${sub}</div></div>`;
 }
 
+function lastHourRow(e, render){
+  if (e && e.missing) return ["Last hour", `<span class="sub">update push.sh on your Mac to enable</span>`];
+  if (!e) return ["Last hour", `<span class="sub">measuring… (needs 15 min of data)</span>`];
+  if (e.idle) return ["Last hour", `<span class="sub">no usage</span>`];
+  const span = Math.round(e.span / 60_000);
+  const [txt, cls] = render(`<b>+${num(e.rate * H)}%/h</b>`);
+  return [span >= 55 ? "Last hour" : `Last ${span}m`, txt, cls];
+}
+
 function card(it, primary){
-  const { k, used, pc, eta: e, proj, state } = it;
+  const { k, used, pc, eta: e, proj, state, wk } = it;
   const reset = u_reset(k);
   let marker = "", paceHtml = "";
   if (pc) {
-    const col = paceColor(proj);
     marker = `<div class="ideal" style="left:${pc.expected.toFixed(1)}%" title="Even pace now"></div>`;
-    const rows = [];
+    const rows = [], left = 100 - used, cost = sessionCost();
+    let pill, gauge = "", planHtml = "";
 
-    // Budget
-    const left = 100 - used;
-    let planHtml = "";
-    const cost = sessionCost();
-    if (pc.offHours) rows.push(["Left", `Resets before 08:00. Use what's left freely.`]);
-    else if (isSession(k)) {
-      rows.push(["Left", `<b>${num(left)}%</b> until ${fmtWhen(pc.end)}`]);
+    if (isSession(k)) {
+      // ---- 5-hour session: will it run out before it resets? ----
+      pill = `<span class="pill" style="--c:${paceColor(proj)}"><span class="pdot"></span>${pc.offHours ? "Resets overnight" : proj == null ? "Just started" : PACE[state]}</span>`;
+      gauge = `<div class="pace-gauge" title="Projected % at reset (worse of average and last hour): 40% left → 140% right"><div class="pace-needle" style="left:${Math.min(100, Math.max(0, ((proj ?? 40) - 40)))}%"></div></div>`;
+      if (pc.offHours) rows.push(["Left", `Resets before 08:00. Use what's left freely.`]);
+      else rows.push(["Left", `<b>${num(left)}%</b> until ${fmtWhen(pc.end)}`]);
       if (k === "five_hour" && cost) rows.push(["Cost", `1 full session ≈ <b>${num(cost)}%</b> of your week`]);
-    } else {
-      const plan = dayPlan(left, pc.end);
-      if (k === "seven_day" && plan) {
-        const room = sessionRoomToday(), cap = cost && room != null ? room / 100 * cost : null;
-        const capped = cap != null && plan.mode === "surplus" && cap < plan.today - 0.5;
-        const cap1 = plan.days.length === 1
-          ? `Remaining <b>${num(left)}%</b> is all yours until the reset`
-          : plan.mode === "surplus"
-          ? `Remaining <b>${num(left)}%</b>: the next days keep the normal <b>${num(plan.perDay)}%</b> per full day, today gets the rest`
+      if (pc.fresh) rows.push(["Avg pace", `<span class="sub">window just started</span>`]);
+      else if (!pc.offHours) rows.push(["Avg pace", `<b>~${Math.round(pc.projected)}%</b> at reset`]);
+      rows.push(lastHourRow(e, r => e.before ? [`${r} → runs out <b>${fmtWhen(e.t)}</b>`, "bad"] : [`${r} → won't run out before reset`, "good"]));
+    } else if (wk) {
+      // ---- Weekly window: today's budget; next days keep the normal share ----
+      pill = `<span class="pill" style="--c:${hueColor(WK_HUE[wk.level])}"><span class="pdot"></span>${wkPill(wk)}</span>`;
+      const plan = wk.plan;
+      const room = sessionRoomToday(), cap = cost && room != null ? room / 100 * cost : null;
+      const capped = k === "seven_day" && cap != null && wk.left > 0.05 && cap < wk.left - 0.5;
+      if (k === "seven_day") {
+        const cap1 = plan.days.length === 1 ? `Remaining <b>${num(left)}%</b> is all yours until the reset`
+          : plan.mode === "surplus" ? `Remaining <b>${num(left)}%</b>: the next days keep the normal <b>${num(plan.perDay)}%</b> per full day, today gets the rest`
           : `Remaining <b>${num(left)}%</b> is less than the normal share for the days left, so the next days are reduced`;
-        const t = (ms) => new Date(ms).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+        const t = ms => new Date(ms).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
         planHtml = `<div class="plan-cap">${cap1}</div>
           <div class="plan">${plan.days.map(p => `<div class="${p.i === 0 ? "today" : ""}"><div class="d">${dayName(p)}${p.until ? ` →${t(p.until)}` : ""}</div><div class="v">${Math.round(p.share)}%</div>${p.i === 0 && capped ? `<div class="c">max ~${Math.round(cap)}%</div>` : ""}</div>`).join("")}</div>`;
-        rows.push(["Today", `<b>${num(plan.today)}%</b>` +
-          (cost && plan.today > 0 ? ` <span class="sub">· ${sessions(plan.today, cost)}</span>` : "") +
-          (capped ? ` <span class="sub">· 5-hour limit: ~${num(cap)}% before 24:00</span>` : "")]);
-      } else {
-        rows.push(["Left", `<b>${num(left)}%</b>`]);
       }
+      rows.push(["Today", `<b>${num(wk.left)}%</b>` +
+        (k === "seven_day" && cost && wk.left > 0.05 ? ` <span class="sub">· ${sessions(wk.left, cost)}</span>` : "") +
+        (capped ? ` <span class="sub">· 5-hour limit: ~${num(cap)}% before 24:00</span>` : "")]);
+      rows.push(lastHourRow(e, r => {
+        if (wk.left <= 0.05) return [`${r} → today's budget is used up`, "bad"];
+        if (wk.level === 2) return [`${r} → today's ${num(wk.left)}% runs out <b>${fmtWhen(wk.runsOut)}</b>`, "bad"];
+        if (wk.level === 1) return [`${r} → today's ${num(wk.left)}% lasts until <b>~${fmtApprox(wk.runsOut)}</b>`, "warn"];
+        return [`${r} → today's ${num(wk.left)}% lasts ${wk.lastDay ? "until the reset" : "past midnight"}`, "good"];
+      }));
+    } else {
+      pill = `<span class="pill" style="--c:${hueColor(140)}"><span class="pdot"></span>—</span>`;
+      rows.push(["Left", `<b>${num(left)}%</b>`]);
     }
 
-    // Window-average projection
-    if (pc.fresh) rows.push(["Avg pace", `<span class="sub">window just started</span>`]);
-    else if (!pc.offHours) rows.push(["Avg pace", `<b>~${Math.round(pc.projected)}%</b> at reset`]);
-
-    // Recent rate + ETA
-    if (e && e.missing) rows.push(["Last hour", `<span class="sub">update push.sh on your Mac to enable</span>`]);
-    else if (!e) rows.push(["Last hour", `<span class="sub">measuring… (needs 15 min of data)</span>`]);
-    else if (e.idle) rows.push(["Last hour", `<span class="sub">no usage</span>`]);
-    else {
-      const rateH = e.rate * H, span = Math.round(e.span / 60_000);
-      const lbl = span >= 55 ? "Last hour" : `Last ${span}m`;
-      if (e.before) rows.push([lbl, `<b>+${num(rateH)}%/h</b> → runs out <b>${fmtWhen(e.t)}</b>`, "bad"]);
-      else rows.push([lbl, `<b>+${num(rateH)}%/h</b> → won't run out before reset`, "good"]);
-    }
-
-    paceHtml = `<div class="pace">
-      <span class="pill" style="--c:${col}"><span class="pdot"></span>${pc.offHours ? "Resets overnight" : proj == null ? "Just started" : PACE[state]}</span>
-      <div class="pace-gauge" title="Projected % at reset (worse of average and last hour): 40% left → 140% right"><div class="pace-needle" style="left:${Math.min(100, Math.max(0, ((proj ?? 40) - 40)))}%"></div></div>
+    paceHtml = `<div class="pace">${pill}${gauge || `<div style="height:4px"></div>`}
       ${planHtml}<dl class="kv">${rows.map(([a, b, cls]) => `<dt>${a}</dt><dd${cls ? ` class="${cls}"` : ""}>${b}</dd>`).join("")}</dl></div>`;
   }
   return `<div class="card${primary ? " primary" : ""}">
@@ -523,7 +553,7 @@ function tick(){
   if (data && data.updated_at) document.getElementById("ago").textContent = "Updated " + fmtAgo(Date.now() - Date.parse(data.updated_at));
 }
 setInterval(tick, 15_000);
-const VERSION = "v9 · 17 Oct 16:15";
+const VERSION = "v10 · 17 Oct 17:50";
 document.getElementById("foot").textContent = `${VERSION} · Mac checks every 3 min · page refreshes every 3 min`;
 poll();
 </script>
