@@ -46,6 +46,11 @@
   .label{font-weight:600}
   .pct{font-size:28px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
   .card.primary .pct{font-size:40px}
+  .viewbar{display:flex;justify-content:flex-end;margin:-6px 0 10px}
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:99px;padding:2px;background:var(--card)}
+  .seg button{border:0;background:none;font:inherit;font-size:12px;font-weight:600;padding:3px 12px;border-radius:99px;color:var(--muted);cursor:pointer}
+  .seg button.on{background:var(--ink);color:var(--bg)}
+  .pct small{font-size:15px;font-weight:600;color:var(--muted);margin-left:5px;letter-spacing:0}
   .bar{position:relative;height:8px;background:var(--track);border-radius:99px}
   .fill{height:100%;border-radius:99px;background:var(--ok);transition:width .6s ease}
   .fill.warn{background:var(--warn)} .fill.hot{background:var(--hot)}
@@ -89,6 +94,8 @@
     <h1>Claude usage</h1>
     <div class="status"><span class="dot" id="dot"></span><span id="ago">—</span></div>
   </header>
+  <div class="viewbar"><div class="seg" role="group" aria-label="Show">
+    <button type="button" data-view="left">Left</button><button type="button" data-view="used">Used</button></div></div>
   <div id="app"><div class="msg">Loading…</div></div>
   <p class="legend">Counts 08:00–24:00 as your possible working time · tick on a bar = even pace now</p>
   <footer id="foot"></footer>
@@ -111,6 +118,15 @@ if (!/^[0-9a-f]{20,40}$/i.test(gistId)) gistId = "";
 try { if (gistId) localStorage.setItem("gist", gistId); else gistId = localStorage.getItem("gist") || ""; } catch {}
 
 let etag = null, data = null, backoff = 0, timer = null, lastPoll = 0, problem = null;
+let view = "left";                                  // "left" (default) or "used"; remembered per device
+try { if (localStorage.getItem("view") === "used") view = "used"; } catch {}
+function setView(v){
+  view = v; try { localStorage.setItem("view", v); } catch {}
+  document.querySelectorAll(".seg button").forEach(b => b.classList.toggle("on", b.dataset.view === view));
+  if (data) render();
+}
+document.querySelectorAll(".seg button").forEach(b => b.addEventListener("click", () => setView(b.dataset.view)));
+setView(view);
 
 // ---- Working-time helpers (local time) ----
 const WORK_START = 8, WORK_END = 24;            // 08:00–24:00; night is ignored
@@ -394,7 +410,8 @@ function render(){
     (cards || `<div class="card msg">No usage windows in the response.</div>`);
 
   const s = items.find(x => x.k === "five_hour"), w = items.find(x => x.k === "seven_day");
-  document.title = [s && `${Math.round(s.used)}%`, w && `${Math.round(w.used)}%`].filter(Boolean).join(" · ") + " — Claude usage";
+  const tv = x => Math.round(view === "left" ? 100 - x.used : x.used);
+  document.title = [s && `${tv(s)}%`, w && `${tv(w)}%`].filter(Boolean).join(" · ") + ` ${view} — Claude usage`;
   tick();
 }
 
@@ -487,10 +504,11 @@ function lastHourRow(e, render){
 
 function card(it, primary){
   const { k, used, pc, eta: e, proj, state, wk } = it;
+  const L = view === "left";
   const reset = u_reset(k);
   let marker = "", paceHtml = "";
   if (pc) {
-    marker = `<div class="ideal" style="left:${pc.expected.toFixed(1)}%" title="Even pace now"></div>`;
+    marker = `<div class="ideal" style="left:${(L ? 100 - pc.expected : pc.expected).toFixed(1)}%" title="Even pace now"></div>`;
     const rows = [], left = 100 - used, cost = sessionCost();
     let pill, gauge = "", planHtml = "";
 
@@ -498,11 +516,11 @@ function card(it, primary){
       // ---- 5-hour session: will it run out before it resets? ----
       pill = `<span class="pill" style="--c:${paceColor(proj)}"><span class="pdot"></span>${pc.offHours ? "Resets overnight" : proj == null ? "Just started" : PACE[state]}</span>`;
       gauge = `<div class="pace-gauge" title="Projected % at reset (worse of average and last hour): 40% left → 140% right"><div class="pace-needle" style="left:${Math.min(100, Math.max(0, ((proj ?? 40) - 40)))}%"></div></div>`;
-      if (pc.offHours) rows.push(["Left", `Resets before 08:00. Use what's left freely.`]);
-      else rows.push(["Left", `<b>${num(left)}%</b> until ${fmtWhen(pc.end)}`]);
+      if (pc.offHours) rows.push(["Note", `Resets before 08:00. Use what's left freely.`]);
       if (k === "five_hour" && cost) rows.push(["Cost", `1 full session ≈ <b>${num(cost)}%</b> of your week`]);
       if (pc.fresh) rows.push(["Avg pace", `<span class="sub">window just started</span>`]);
-      else if (!pc.offHours) rows.push(["Avg pace", `<b>~${Math.round(pc.projected)}%</b> at reset`]);
+      else if (!pc.offHours) rows.push(["Avg pace", pc.projected >= 100 ? `<b>runs out</b> before reset`
+        : L ? `<b>~${Math.round(100 - pc.projected)}%</b> left at reset` : `<b>~${Math.round(pc.projected)}%</b> used at reset`]);
       rows.push(lastHourRow(e, r => e.before ? [`${r} → runs out <b>${fmtWhen(e.t)}</b>`, "bad"] : [`${r} → won't run out before reset`, "good"]));
     } else if (wk) {
       // ---- Weekly window: today's budget; next days keep the normal share ----
@@ -529,20 +547,19 @@ function card(it, primary){
       }));
     } else {
       pill = `<span class="pill" style="--c:${hueColor(140)}"><span class="pdot"></span>—</span>`;
-      rows.push(["Left", `<b>${num(left)}%</b>`]);
     }
 
     paceHtml = `<div class="pace">${pill}${gauge || `<div style="height:4px"></div>`}
       ${planHtml}<dl class="kv">${rows.map(([a, b, cls]) => `<dt>${a}</dt><dd${cls ? ` class="${cls}"` : ""}>${b}</dd>`).join("")}</dl></div>`;
   }
   return `<div class="card${primary ? " primary" : ""}">
-    <div class="row"><span class="label">${esc(LABELS[k])}</span><span class="pct">${Math.round(used)}%</span></div>
-    <div class="bar"><div class="fill ${level(used)}" style="width:${used}%"></div>${marker}</div>
-    <div class="reset">${reset}</div>${paceHtml}</div>`;
+    <div class="row"><span class="label">${esc(LABELS[k])}</span><span class="pct">${Math.round(L ? 100 - used : used)}%<small>${L ? "left" : "used"}</small></span></div>
+    <div class="bar"><div class="fill ${level(used)}" style="width:${L ? 100 - used : used}%"></div>${marker}</div>
+    <div class="reset">${Math.round(L ? used : 100 - used)}% ${L ? "used" : "left"}${reset ? " · " + reset : ""}</div>${paceHtml}</div>`;
 }
 function u_reset(k){
   const r = data.usage[k].resets_at;
-  return r ? `Resets in <span data-reset="${esc(r)}"></span>` : "";
+  return r ? `resets in <span data-reset="${esc(r)}"></span>` : "";
 }
 
 function tick(){
@@ -553,7 +570,7 @@ function tick(){
   if (data && data.updated_at) document.getElementById("ago").textContent = "Updated " + fmtAgo(Date.now() - Date.parse(data.updated_at));
 }
 setInterval(tick, 15_000);
-const VERSION = "v10 · 17 Oct 17:50";
+const VERSION = "v11 · 17 Oct 19:05";
 document.getElementById("foot").textContent = `${VERSION} · Mac checks every 3 min · page refreshes every 3 min`;
 poll();
 </script>
