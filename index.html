@@ -67,6 +67,13 @@
   .kv dd.bad{color:var(--hot);font-weight:600}
   .kv dd.good{color:var(--ok)}
 
+  .plan-cap{font-size:12px;color:var(--muted);margin:12px 0 6px}
+  .plan{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:6px;margin-bottom:12px}
+  .plan div{background:var(--track);border-radius:10px;padding:7px 4px;text-align:center;min-width:0}
+  .plan .d{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .plan .v{font-size:16px;font-weight:700;font-variant-numeric:tabular-nums}
+  .plan .today{background:color-mix(in srgb,var(--ok) 15%,var(--card));box-shadow:inset 0 0 0 1.5px color-mix(in srgb,var(--ok) 55%,transparent)}
+  .plan .today .d{color:var(--ok);font-weight:650}
   .legend{font-size:12px;color:var(--muted);margin-top:4px;text-align:center}
   .msg{color:var(--muted);text-align:center;padding:28px 8px}
   .msg b{color:var(--ink)}
@@ -81,7 +88,7 @@
     <div class="status"><span class="dot" id="dot"></span><span id="ago">—</span></div>
   </header>
   <div id="app"><div class="msg">Loading…</div></div>
-  <p class="legend">Working hours 08:00–24:00 · tick on a bar = where an even pace would be now</p>
+  <p class="legend">Counts 08:00–24:00 as your possible working time · tick on a bar = even pace now</p>
   <footer id="foot"></footer>
 </main>
 <script>
@@ -94,7 +101,7 @@ const LABELS = {
   seven_day_oauth_apps: "Week · Connected apps",
 };
 const SHORT = { five_hour: "Session", seven_day: "Week" };
-const POLL_MS = 180_000, STALE_MS = 6 * 60_000;   // GitHub allows 60 anonymous reads/hour per network
+const POLL_MS = 180_000, STALE_MS = 10 * 60_000;   // GitHub allows 60 anonymous reads/hour per network
 const RECENT_MS = 60 * 60_000, RECENT_MIN_MS = 15 * 60_000;   // recent rate: last hour, needs ≥15 min of data
 const app = document.getElementById("app");
 let gistId = location.hash.slice(1);
@@ -191,6 +198,40 @@ function eta(k, used, end, rr){
   return { t, before: t < end, ...rr };
 }
 
+// ---- Remaining weekly allowance split per day, in proportion to working hours left that day ----
+function dayPlan(left, end){
+  const now = Date.now(), total = workMs(now, end);
+  if (total <= 0) return [];
+  const out = [], d = new Date(now); d.setHours(0, 0, 0, 0);
+  for (let i = 0; i < 10 && d.getTime() < end; i++) {
+    const next = new Date(d); next.setDate(next.getDate() + 1);
+    const ms = workMs(Math.max(now, d.getTime()), Math.min(end, next.getTime()));
+    if (ms > 0) out.push({ day: new Date(d), i, share: left * ms / total, until: end < next.getTime() ? end : null });
+    d.setDate(d.getDate() + 1);
+  }
+  return out;
+}
+function dayName(p){
+  if (p.i === 0) return "Today";
+  if (p.i === 1) return "Tomorrow";
+  return p.day.toLocaleDateString([], {weekday: "short"});
+}
+// ---- What one full 5-hour session costs in weekly %, learned from the Mac's history ----
+function sessionCost(){
+  if (!Array.isArray(data.history) || !Array.isArray(data.history_keys)) return null;
+  const si = data.history_keys.indexOf("five_hour") + 1, wi = data.history_keys.indexOf("seven_day") + 1;
+  if (si < 1 || wi < 1) return null;
+  const h = data.history.filter(r => Array.isArray(r) && typeof r[si] === "number" && typeof r[wi] === "number");
+  let dS = 0, dW = 0, start = 0;
+  for (let i = 1; i <= h.length; i++) {          // add up stretches between resets
+    const cut = i === h.length || h[i][si] < h[i-1][si] || h[i][wi] < h[i-1][wi];
+    if (cut) { dS += h[i-1][si] - h[start][si]; dW += h[i-1][wi] - h[start][wi]; start = i; }
+  }
+  if (dS < 20 || dW < 2) return null;            // not enough usage seen yet to be reliable
+  return dW / dS * 100;                          // weekly % per full session
+}
+function sessions(pct, cost){ const n = pct / cost; return n < 1 ? "less than 1 full session" : `≈ ${num(n)} full session${n >= 1.5 ? "s" : ""}`; }
+
 // ---- Formatting ----
 function esc(v){ return String(v).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function level(p){ return p >= 90 ? "hot" : p >= 70 ? "warn" : ""; }
@@ -199,7 +240,7 @@ function fmtDur(ms){
   const m = Math.round(ms/60000), d = Math.floor(m/1440), h = Math.floor((m%1440)/60), mm = m%60;
   return d ? `${d}d ${h}h` : h ? `${h}h ${mm}m` : `${mm}m`;
 }
-function fmtAgo(ms){ const s = Math.max(0, Math.round(ms/1000)); return s < 60 ? `${s}s ago` : `${Math.round(s/60)}m ago`; }
+function fmtAgo(ms){ const s = Math.max(0, Math.round(ms/1000)); return s < 60 ? `${s}s ago` : s < 5400 ? `${Math.round(s/60)}m ago` : `${fmtDur(ms)} ago`; }
 function fmtWhen(t){
   const d = new Date(t), now = new Date();
   const time = d.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
@@ -280,15 +321,24 @@ function render(){
   if (data.status === "pending") {
     app.innerHTML = note + `<div class="card msg">Waiting for the first push from your Mac…</div>`; return;
   }
-  const age = Date.now() - Date.parse(data.updated_at);
-  dot.className = "dot" + (data.status === "error" ? " err" : age > STALE_MS ? " stale" : "");
-  ago.textContent = "Mac update " + fmtAgo(age);
+  const now = Date.now();
+  const age = now - Date.parse(data.updated_at);                        // how old the numbers are
+  const macAge = now - Date.parse(data.checked_at || data.updated_at);  // when the Mac last pushed
+  const retryAt = typeof data.retry_at === "number" ? data.retry_at * 1000 : 0;
+  const macQuiet = macAge > STALE_MS && !(retryAt && now < retryAt + 2 * 60_000);   // not just waiting out a back-off
+  const warn = typeof data.warning_http === "number";
+  dot.className = "dot" + (data.status === "error" ? " err" : (warn || macQuiet) ? " stale" : "");
+  ago.textContent = "Updated " + fmtAgo(age);
+  const next = retryAt > now ? ` Next check at <b>${fmtWhen(retryAt)}</b>.` : "";
+  const reason = h => h === 429 ? "Anthropic is limiting how often your usage can be checked (HTTP 429)."
+    : h === 0 ? "Your Mac couldn't reach Anthropic (offline?)."
+    : `The usage check failed (HTTP ${esc(h)}).`;
 
   if (data.status === "error") {
     const why = data.http === 401
       ? "Claude Code login expired. Run <b>claude</b> in Terminal on your Mac once to refresh it."
-      : `Usage request failed (HTTP ${esc(data.http)}). The endpoint may have changed.`;
-    app.innerHTML = `<div class="card msg">${why}</div>`;
+      : reason(data.http) + next;
+    app.innerHTML = note + `<div class="card msg">${why}</div>`;
     document.title = "! Claude usage";
     return;
   }
@@ -317,7 +367,8 @@ function render(){
 
   const cards = items.map((it, i) => card(it, i === 0)).join("");
   app.innerHTML = note + (items.length ? headline(items) : "") +
-    (age > STALE_MS ? `<div class="card msg">Last update was ${fmtAgo(age)}. Is your Mac awake?</div>` : "") +
+    (warn ? `<div class="card msg">${reason(data.warning_http)} Showing numbers from <b>${fmtWhen(Date.parse(data.updated_at))}</b>.${next}</div>` : "") +
+    (macQuiet ? `<div class="card msg">Your Mac hasn't reported for ${fmtDur(macAge)}. Is it awake?</div>` : "") +
     (cards || `<div class="card msg">No usage windows in the response.</div>`);
 
   const s = items.find(x => x.k === "five_hour"), w = items.find(x => x.k === "seven_day");
@@ -343,17 +394,21 @@ function headline(items){
   }
   const w = items.find(x => x.k === "seven_day" && x.pc);
   const s = items.find(x => x.k === "five_hour" && x.pc);
-  const perDay = w && w.pc.workLeft > 0 ? (100 - w.used) / (w.pc.workLeft / DAY_WORK) : null;
-  const dayTip = perDay != null ? `Keep the week to <b>~${num(perDay)}%</b> per working day.` : "";
+  const plan = w ? dayPlan(100 - w.used, w.pc.end) : [];
+  const today = plan.length && plan[0].i === 0 ? plan[0].share : null;
+  const cost = sessionCost();
+  const todayTxt = today == null ? "" :
+    `Today you can use up to <b>${num(today)}%</b> of your week` + (cost ? ` (${sessions(today, cost)})` : "") + ".";
+  const dayTip = todayTxt;
 
   let title, hue, sub;
   if (worst.sev === 2) { title = "Slow down"; hue = 5; sub = worst.msg + (worst.it.k === "five_hour" ? "" : " " + dayTip); }
   else if (worst.sev === 1) { title = "Pace yourself"; hue = 35; sub = worst.msg + " " + (worst.it.k === "five_hour" ? "" : dayTip); }
   else {
     title = "Spend freely"; hue = 140;
-    const parts = ["Under pace on every window."];
-    if (perDay != null) parts.push(`Week budget <b>~${num(perDay)}%</b> per working day.`);
-    if (s) parts.push(`Session resets at <b>${fmtWhen(s.pc.end)}</b>.`);
+    const parts = [];
+    if (todayTxt) parts.push(todayTxt, "Stop earlier and the rest moves to the next days.");
+    else parts.push("Under pace on every window.");
     sub = parts.join(" ");
   }
   return `<div class="card head" style="--c:${hueColor(hue)}">
@@ -372,14 +427,21 @@ function card(it, primary){
 
     // Budget
     const left = 100 - used;
-    if (pc.offHours) rows.push(["Budget", `Resets before 08:00. Use what's left freely.`]);
+    let planHtml = "";
+    const cost = sessionCost();
+    if (pc.offHours) rows.push(["Left", `Resets before 08:00. Use what's left freely.`]);
     else if (isSession(k)) {
-      const perH = pc.workLeft > 0 ? left / (pc.workLeft / H) : null;
-      rows.push(["Left", `<b>${num(left)}%</b> for ${fmtDur(pc.workLeft)}` +
-        (perH != null && pc.workLeft > 90 * 60_000 ? ` <span class="sub">· ~${num(perH)}%/hour</span>` : "")]);
+      rows.push(["Left", `<b>${num(left)}%</b> until ${fmtWhen(pc.end)}`]);
+      if (k === "five_hour" && cost) rows.push(["Cost", `1 full session ≈ <b>${num(cost)}%</b> of your week`]);
     } else {
-      const days = pc.workLeft / DAY_WORK;
-      rows.push(["Left", `<b>${num(left)}%</b> <span class="sub">· ~${num(left / days)}% per working day (${num(days)} days)</span>`]);
+      const plan = dayPlan(left, pc.end);
+      if (k === "seven_day" && plan.length) {
+        planHtml = `<div class="plan-cap">Your remaining <b>${num(left)}%</b>, spread over the days left (08–24)</div>
+          <div class="plan">${plan.map(p => `<div class="${p.i === 0 ? "today" : ""}"><div class="d">${dayName(p)}${p.until ? ` →${new Date(p.until).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"})}` : ""}</div><div class="v">${Math.round(p.share)}%</div></div>`).join("")}</div>`;
+        if (plan[0].i === 0) rows.push(["Today", `<b>${num(plan[0].share)}%</b>` + (cost ? ` <span class="sub">· ${sessions(plan[0].share, cost)}</span>` : "")]);
+      } else {
+        rows.push(["Left", `<b>${num(left)}%</b>`]);
+      }
     }
 
     // Window-average projection
@@ -400,7 +462,7 @@ function card(it, primary){
     paceHtml = `<div class="pace">
       <span class="pill" style="--c:${col}"><span class="pdot"></span>${pc.offHours ? "Resets overnight" : proj == null ? "Just started" : PACE[state]}</span>
       <div class="pace-gauge" title="Projected % at reset (worse of average and last hour): 40% left → 140% right"><div class="pace-needle" style="left:${Math.min(100, Math.max(0, ((proj ?? 40) - 40)))}%"></div></div>
-      <dl class="kv">${rows.map(([a, b, cls]) => `<dt>${a}</dt><dd${cls ? ` class="${cls}"` : ""}>${b}</dd>`).join("")}</dl></div>`;
+      ${planHtml}<dl class="kv">${rows.map(([a, b, cls]) => `<dt>${a}</dt><dd${cls ? ` class="${cls}"` : ""}>${b}</dd>`).join("")}</dl></div>`;
   }
   return `<div class="card${primary ? " primary" : ""}">
     <div class="row"><span class="label">${esc(LABELS[k])}</span><span class="pct">${Math.round(used)}%</span></div>
@@ -417,11 +479,11 @@ function tick(){
     const t = Date.parse(el.dataset.reset);
     if (!isNaN(t)) el.textContent = `${fmtDur(t - Date.now())} · ${fmtWhen(t)}`;
   });
-  if (data && data.updated_at) document.getElementById("ago").textContent = "Mac update " + fmtAgo(Date.now() - Date.parse(data.updated_at));
+  if (data && data.updated_at) document.getElementById("ago").textContent = "Updated " + fmtAgo(Date.now() - Date.parse(data.updated_at));
 }
 setInterval(tick, 15_000);
-const VERSION = "v6 · 17 Oct 12:16";
-document.getElementById("foot").textContent = `${VERSION} · refreshes every 3 min while open`;
+const VERSION = "v8 · 17 Oct 13:05";
+document.getElementById("foot").textContent = `${VERSION} · Mac checks every 3 min · page refreshes every 3 min`;
 poll();
 </script>
 </body>
