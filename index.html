@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src https://api.github.com; base-uri 'none'; form-action 'none'">
+<meta name="robots" content="noindex">
+<title>Claude Usage</title>
+<style>
+  :root{
+    --bg:#f6f5f2; --card:#fff; --ink:#1d1c1a; --muted:#6f6c66; --line:#e6e3dd;
+    --track:#ecebe7; --ok:#3d7a5a; --warn:#c08a1e; --hot:#c0432f;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#151413; --card:#1f1e1c; --ink:#f1efea; --muted:#9a968e; --line:#2e2c29;
+      --track:#2c2a27; --ok:#5fae84; --warn:#e0a83a; --hot:#e3664f; }
+  }
+  *{box-sizing:border-box;margin:0}
+  body{background:var(--bg);color:var(--ink);font:15px/1.4 -apple-system,BlinkMacSystemFont,"Inter",system-ui,sans-serif;
+    padding:24px 16px 40px;min-height:100vh}
+  main{max-width:520px;margin:0 auto}
+  header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:18px}
+  h1{font-size:20px;font-weight:650;letter-spacing:-.01em}
+  .status{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--ok)}
+  .dot.stale{background:var(--warn)} .dot.err{background:var(--hot)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:12px}
+  .row{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px}
+  .label{font-weight:600}
+  .pct{font-size:28px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+  .bar{height:8px;background:var(--track);border-radius:99px;overflow:hidden}
+  .fill{height:100%;border-radius:99px;background:var(--ok);transition:width .6s ease}
+  .fill.warn{background:var(--warn)} .fill.hot{background:var(--hot)}
+  .reset{margin-top:8px;font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .card.primary .pct{font-size:40px}
+  .bar{position:relative;overflow:visible}
+  .fill{overflow:hidden}
+  .ideal{position:absolute;top:-4px;bottom:-4px;width:2px;background:var(--ink);opacity:.55;border-radius:1px}
+  .pace{margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
+  .pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:650;color:var(--c);
+    background:color-mix(in srgb,var(--c) 14%,transparent);padding:3px 9px;border-radius:99px}
+  .pdot{width:7px;height:7px;border-radius:50%;background:var(--c)}
+  .pace-gauge{position:relative;height:6px;margin:10px 0 8px;border-radius:99px;
+    background:linear-gradient(90deg,hsl(140 60% 45%) 0%,hsl(140 60% 45%) 20%,hsl(40 85% 50%) 60%,hsl(5 70% 50%) 90%)}
+  .pace-needle{position:absolute;top:-4px;width:4px;height:14px;margin-left:-2px;border-radius:2px;
+    background:var(--ink);box-shadow:0 0 0 2px var(--card)}
+  .pace-txt{font-size:13px;color:var(--muted)}
+  .pace-txt b{color:var(--ink);font-variant-numeric:tabular-nums}
+  .legend{font-size:12px;color:var(--muted);margin:-6px 0 14px}
+  .msg{color:var(--muted);text-align:center;padding:28px 8px}
+  .msg b{color:var(--ink)}
+  input{width:100%;padding:10px;margin-top:12px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:inherit}
+  footer{font-size:12px;color:var(--muted);text-align:center;margin-top:16px}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Claude usage</h1>
+    <div class="status"><span class="dot" id="dot"></span><span id="ago">—</span></div>
+  </header>
+  <p class="legend">Pace counts only 08:00–24:00. The tick on each bar marks where an even pace would be now.</p>
+  <div id="app"><div class="msg">Loading…</div></div>
+  <footer id="foot"></footer>
+</main>
+<script>
+const LABELS = {
+  five_hour: "Session · 5 hours",
+  seven_day: "Week · all models",
+  seven_day_opus: "Week · Opus",
+  seven_day_sonnet: "Week · Sonnet",
+};
+const POLL_MS = 90_000, STALE_MS = 3 * 60_000;
+const app = document.getElementById("app");
+let gistId = location.hash.slice(1);
+if (!/^[0-9a-f]{20,40}$/i.test(gistId)) gistId = "";
+try { if (gistId) localStorage.setItem("gist", gistId); else gistId = localStorage.getItem("gist") || ""; } catch {}
+
+let etag = null, data = null, lastFetchOk = 0, backoff = 0;
+
+// ---- Pacing: only working hours count (local time) ----
+const WORK_START = 8, WORK_END = 24;            // 08:00–24:00; night is ignored
+const H = 3600_000;
+function windowLen(k){ return k.startsWith("five_hour") ? 5 * H : 7 * 24 * H; }
+
+// Working milliseconds between a and b (timestamps)
+function workMs(a, b){
+  if (b <= a) return 0;
+  let total = 0;
+  const d = new Date(a); d.setHours(0, 0, 0, 0);
+  while (d.getTime() < b) {
+    const s = new Date(d); s.setHours(WORK_START, 0, 0, 0);
+    const e = new Date(d); e.setHours(WORK_END, 0, 0, 0);   // 24 → next midnight
+    total += Math.max(0, Math.min(b, e.getTime()) - Math.max(a, s.getTime()));
+    d.setDate(d.getDate() + 1);
+  }
+  return total;
+}
+
+// Returns {projected, expected, perUnit, unit, state, note}
+function pace(k, used, resetsAt){
+  const now = Date.now(), end = Date.parse(resetsAt), start = end - windowLen(k);
+  const done = workMs(start, now), left = workMs(now, end), total = done + left;
+  const isWeek = !k.startsWith("five_hour");
+  const unitMs = isWeek ? (WORK_END - WORK_START) * H : H;      // per working day / per hour
+  const res = { expected: total ? done / total * 100 : 0, unit: isWeek ? "working day" : "hour" };
+  res.perUnit = left > 0 ? (100 - used) / (left / unitMs) : null;
+
+  if (left <= 0)            return { ...res, projected: used, state: 0, note: "Resets before you're back. Use what's left freely." };
+  if (done < 15 * 60_000)   return { ...res, projected: null, state: used >= 50 ? 3 : 0, note: "Window just started." };
+  const projected = used + used / done * left;                 // current burn rate over remaining working time
+  const state = used >= 95 || projected > 130 ? 3 : projected > 100 ? 2 : projected > 80 ? 1 : 0;
+  return { ...res, projected, state, note: null };
+}
+const PACE = [
+  { name: "Comfortable", hue: 140 },
+  { name: "On track",    hue: 85  },
+  { name: "Tight",       hue: 35  },
+  { name: "Over pace",   hue: 5   },
+];
+function paceColor(proj){
+  // continuous green→red: ≤60% green, 100% amber, ≥130% red
+  const p = proj == null ? 60 : proj;
+  const hue = p <= 60 ? 140 : p <= 100 ? 140 - (p - 60) / 40 * 100 : Math.max(5, 40 - (p - 100) / 30 * 35);
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  return `hsl(${hue.toFixed(0)} 65% ${dark ? 55 : 42}%)`;
+}
+
+function esc(v){ return String(v).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function pretty(k){ return LABELS[k] || k.replace(/_/g," ").replace(/\b\w/g,c=>c.toUpperCase()); }
+function level(p){ return p >= 90 ? "hot" : p >= 70 ? "warn" : ""; }
+function fmtDur(ms){
+  if (ms <= 0) return "now";
+  const m = Math.floor(ms/60000), d = Math.floor(m/1440), h = Math.floor((m%1440)/60), mm = m%60;
+  return d ? `${d}d ${h}h` : h ? `${h}h ${mm}m` : `${mm}m`;
+}
+function fmtAgo(ms){ const s = Math.round(ms/1000); return s < 60 ? `${s}s ago` : `${Math.round(s/60)}m ago`; }
+
+function askForId(){
+  app.innerHTML = `<div class="card msg">Paste your gist ID (printed by <b>setup.sh</b>)
+    <input id="gid" placeholder="e.g. 3f2a…" autocomplete="off"></div>`;
+  document.getElementById("gid").addEventListener("change", e => {
+    gistId = e.target.value.trim(); if (!/^[0-9a-f]{20,40}$/i.test(gistId)) return; location.hash = gistId; poll();
+  });
+}
+
+async function poll(){
+  if (!gistId) return askForId();
+  try {
+    const r = await fetch(`https://api.github.com/gists/${gistId}`, {
+      headers: Object.assign({Accept:"application/vnd.github+json"}, etag ? {"If-None-Match": etag} : {}),
+      cache: "no-store",
+    });
+    if (r.status === 304) { lastFetchOk = Date.now(); backoff = 0; }
+    else if (r.ok) {
+      etag = r.headers.get("ETag");
+      const g = await r.json();
+      data = JSON.parse(g.files["usage.json"].content);
+      lastFetchOk = Date.now(); backoff = 0;
+    } else if (r.status === 403 || r.status === 429) { backoff = 5 * 60_000; }   // GitHub rate limit
+    else if (r.status === 404) { app.innerHTML = `<div class="card msg">Gist not found. Check the ID.</div>`; return; }
+  } catch { backoff = Math.min((backoff || 30_000) * 2, 5 * 60_000); }
+  render();
+  setTimeout(poll, backoff || POLL_MS);
+}
+
+function render(){
+  const dot = document.getElementById("dot"), ago = document.getElementById("ago");
+  if (!data || data.status === "pending") {
+    app.innerHTML = `<div class="card msg">Waiting for the first push from your Mac…</div>`; return;
+  }
+  const age = Date.now() - Date.parse(data.updated_at);
+  dot.className = "dot" + (data.status === "error" ? " err" : age > STALE_MS ? " stale" : "");
+  ago.textContent = "Mac update " + fmtAgo(age);
+
+  if (data.status === "error") {
+    const why = data.http === 401
+      ? "Claude Code token expired. Open <b>claude</b> on your Mac once to refresh it."
+      : `Usage request failed (HTTP ${esc(data.http)}). The endpoint may have changed.`;
+    app.innerHTML = `<div class="card msg">${why}</div>`;
+    return;
+  }
+
+  const u = data.usage || {};
+  const order = Object.keys(LABELS).concat(Object.keys(u).filter(k => !(k in LABELS)));
+  const html = order
+    .filter(k => u[k] && typeof u[k] === "object" && typeof u[k].utilization === "number")
+    .map((k, i) => {
+      const p = Math.max(0, Math.min(100, u[k].utilization));
+      const reset = u[k].resets_at ? `Resets in <span data-reset="${esc(u[k].resets_at)}"></span>` : "";
+      let paceHtml = "", marker = "";
+      if (u[k].resets_at) {
+        const pc = pace(k, p, u[k].resets_at), col = paceColor(pc.projected), st = PACE[pc.state];
+        marker = `<div class="ideal" style="left:${pc.expected.toFixed(1)}%" title="Even pace"></div>`;
+        const proj = pc.projected == null ? "" : `On this pace: <b>~${Math.round(pc.projected)}%</b> at reset`;
+        const budget = pc.perUnit == null ? "" :
+          `Budget: <b>${pc.perUnit >= 100 ? "100" : pc.perUnit.toFixed(pc.perUnit < 10 ? 1 : 0)}%</b> per ${pc.unit} left`;
+        paceHtml = `<div class="pace">
+          <span class="pill" style="--c:${col}"><span class="pdot"></span>${st.name}</span>
+          <div class="pace-gauge"><div class="pace-needle" style="left:${Math.min(100, Math.max(0, ((pc.projected ?? 60) - 40) / 100 * 100))}%"></div></div>
+          <div class="pace-txt">${pc.note || proj}${budget ? `<br>${budget}` : ""}</div></div>`;
+      }
+      return `<div class="card${i === 0 ? " primary" : ""}">
+        <div class="row"><span class="label">${esc(pretty(k))}</span><span class="pct">${Math.round(p)}%</span></div>
+        <div class="bar"><div class="fill ${level(p)}" style="width:${p}%"></div>${marker}</div>
+        <div class="reset">${reset}</div>${paceHtml}</div>`;
+    }).join("");
+  app.innerHTML = html || `<div class="card msg">No usage windows in the response.</div>`;
+  if (age > STALE_MS) app.insertAdjacentHTML("afterbegin",
+    `<div class="card msg">Last update was ${fmtAgo(age)}. Is your Mac awake?</div>`);
+  tick();
+}
+
+function tick(){
+  document.querySelectorAll("[data-reset]").forEach(el => {
+    const t = Date.parse(el.dataset.reset);
+    el.textContent = `${fmtDur(t - Date.now())} · ${new Date(t).toLocaleString([], {weekday:"short", hour:"2-digit", minute:"2-digit"})}`;
+  });
+  if (data && data.updated_at) document.getElementById("ago").textContent = "Mac update " + fmtAgo(Date.now() - Date.parse(data.updated_at));
+}
+setInterval(tick, 15_000);
+document.getElementById("foot").textContent = "Refreshes every 90s · data via your Mac";
+poll();
+</script>
+</body>
+</html>
