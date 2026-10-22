@@ -363,17 +363,21 @@ function render(){
   const macAge = now - Date.parse(data.checked_at || data.updated_at);  // when the Mac last pushed
   const retryAt = typeof data.retry_at === "number" ? data.retry_at * 1000 : 0;
   const macQuiet = macAge > STALE_MS && !(retryAt && now < retryAt + 2 * 60_000);   // not just waiting out a back-off
-  const warn = typeof data.warning_http === "number";
-  dot.className = "dot" + (data.status === "error" ? " err" : (warn || macQuiet) ? " stale" : "");
+  const warn = typeof data.warning_http === "number" || !!data.warning;
+  dot.className = "dot" + (data.status === "error" || data.warning ? " err" : (warn || macQuiet) ? " stale" : "");
   ago.textContent = "Updated " + fmtAgo(age);
   const next = retryAt > now ? ` Next check at <b>${fmtWhen(retryAt)}</b>.` : "";
+  const loginMsg = w => (w === "logged_out"
+      ? "Claude Code is logged out on your Mac. Run <b>claude</b> in Terminal there and log in."
+      : "Claude Code's login on your Mac has expired. Run <b>claude</b> in Terminal there to refresh it.")
+    + " The dashboard updates within a minute after.";
   const reason = h => h === 429 ? "Anthropic is limiting how often your usage can be checked (HTTP 429)."
     : h === 0 ? "Your Mac couldn't reach Anthropic (offline?)."
     : `The usage check failed (HTTP ${esc(h)}).`;
 
   if (data.status === "error") {
-    const why = data.http === 401
-      ? "Claude Code login expired. Run <b>claude</b> in Terminal on your Mac once to refresh it."
+    const why = data.warning ? loginMsg(data.warning)
+      : data.http === 401 ? loginMsg("expired")
       : reason(data.http) + next;
     app.innerHTML = note + `<div class="card msg">${why}</div>`;
     document.title = "! Claude usage";
@@ -405,7 +409,7 @@ function render(){
 
   const cards = items.map((it, i) => card(it, i === 0)).join("");
   app.innerHTML = note + (items.length ? headline(items) : "") +
-    (warn ? `<div class="card msg">${reason(data.warning_http)} Showing numbers from <b>${fmtWhen(Date.parse(data.updated_at))}</b>.${next}</div>` : "") +
+    (warn ? `<div class="card msg">${data.warning ? loginMsg(data.warning) : reason(data.warning_http) + next} Showing numbers from <b>${fmtWhen(Date.parse(data.updated_at))}</b>.</div>` : "") +
     (macQuiet ? `<div class="card msg">Your Mac hasn't reported for ${fmtDur(macAge)}. Is it awake?</div>` : "") +
     (cards || `<div class="card msg">No usage windows in the response.</div>`);
 
@@ -570,7 +574,7 @@ function tick(){
   if (data && data.updated_at) document.getElementById("ago").textContent = "Updated " + fmtAgo(Date.now() - Date.parse(data.updated_at));
 }
 setInterval(tick, 15_000);
-const VERSION = "v11 · 17 Oct 19:05";
+const VERSION = "v12 · 22 Oct 22:15";
 document.getElementById("foot").textContent = `${VERSION} · Mac checks every 3 min · page refreshes every 3 min`;
 poll();
 </script>
