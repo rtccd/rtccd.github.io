@@ -18,10 +18,12 @@
   :root{
     --bg:#f6f5f2; --card:#fff; --ink:#1d1c1a; --muted:#6f6c66; --line:#e6e3dd;
     --track:#ecebe7; --ok:#3d7a5a; --warn:#c08a1e; --hot:#c0432f;
+    --bar-green:#3f9a62; --bar-blue:#3b7fd4; --bar-red:#d0543f;
   }
   @media (prefers-color-scheme: dark){
     :root{ --bg:#151413; --card:#1f1e1c; --ink:#f1efea; --muted:#9a968e; --line:#2e2c29;
-      --track:#2c2a27; --ok:#5fae84; --warn:#e0a83a; --hot:#e3664f; }
+      --track:#2c2a27; --ok:#5fae84; --warn:#e0a83a; --hot:#e3664f;
+      --bar-green:#4fae75; --bar-blue:#5b9bf0; --bar-red:#e3664f; }
   }
   *{box-sizing:border-box;margin:0}
   body{background:var(--bg);color:var(--ink);font:15px/1.4 -apple-system,BlinkMacSystemFont,"Inter",system-ui,sans-serif;
@@ -46,10 +48,6 @@
   .label{font-weight:600}
   .pct{font-size:28px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
   .card.primary .pct{font-size:40px}
-  .viewbar{display:flex;justify-content:flex-end;margin:-6px 0 10px}
-  .seg{display:inline-flex;border:1px solid var(--line);border-radius:99px;padding:2px;background:var(--card)}
-  .seg button{border:0;background:none;font:inherit;font-size:12px;font-weight:600;padding:3px 12px;border-radius:99px;color:var(--muted);cursor:pointer}
-  .seg button.on{background:var(--ink);color:var(--bg)}
   .pct small{font-size:15px;font-weight:600;color:var(--muted);margin-left:5px;letter-spacing:0}
   .bar{position:relative;height:8px;background:var(--track);border-radius:99px}
   .fill{height:100%;border-radius:99px;background:var(--ok);transition:width .6s ease}
@@ -81,6 +79,25 @@
   .plan .today{background:color-mix(in srgb,var(--ok) 15%,var(--card));box-shadow:inset 0 0 0 1.5px color-mix(in srgb,var(--ok) 55%,transparent)}
   .plan .today .d{color:var(--ok);font-weight:650}
   .plan .c{font-size:10.5px;color:var(--muted);margin-top:1px;white-space:nowrap}
+  .meter{position:relative;height:18px;margin-top:16px}
+  .mtrack{position:absolute;inset:0;background:var(--track);border-radius:9px;overflow:hidden}
+  .mseg{position:absolute;top:0;bottom:0}
+  .mseg.green{background:var(--bar-green)} .mseg.blue{background:var(--bar-blue)} .mseg.red{background:var(--bar-red)}
+  .mseg.gap{background:repeating-linear-gradient(135deg,color-mix(in srgb,var(--bar-red) 30%,transparent) 0 4px,transparent 4px 8px);
+    box-shadow:inset 0 0 0 1.5px color-mix(in srgb,var(--bar-red) 55%,transparent)}
+  .msep{position:absolute;top:0;bottom:0;width:3px;margin-left:-1.5px;background:var(--card)}
+  .mark{position:absolute;top:-11px;bottom:-3px;width:0;z-index:2}
+  .mark::before{content:"";position:absolute;left:-7px;top:0;border:7px solid transparent;border-top:9px solid var(--ink);border-bottom:0}
+  .mark::after{content:"";position:absolute;left:-1px;top:9px;bottom:0;width:2px;background:var(--ink);opacity:.8}
+  .days{position:relative;height:32px;margin-top:6px}
+  .day{position:absolute;transform:translateX(-50%);text-align:center;font-size:11px;font-weight:650;color:var(--muted);line-height:1.25;white-space:nowrap}
+  .day b{display:block;font-size:13px;color:var(--ink);font-variant-numeric:tabular-nums}
+  .day.today span{background:var(--ink);color:var(--card);border-radius:4px;padding:0 4px}
+  .day.cut b{color:var(--bar-red)}
+  .meta{margin-top:6px;font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .mpace{margin-top:2px;font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .mpace b{font-weight:650} .mpace b.k{color:var(--bar-green)} .mpace.ahead b.k{color:var(--bar-blue)} .mpace.behind b.k, .mpace b.bad{color:var(--bar-red)}
+  .kvbox{margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
   .legend{font-size:12px;color:var(--muted);margin-top:4px;text-align:center}
   .msg{color:var(--muted);text-align:center;padding:28px 8px}
   .msg b{color:var(--ink)}
@@ -94,10 +111,8 @@
     <h1>Claude usage</h1>
     <div class="status"><span class="dot" id="dot"></span><span id="ago">—</span></div>
   </header>
-  <div class="viewbar"><div class="seg" role="group" aria-label="Show">
-    <button type="button" data-view="left">Left</button><button type="button" data-view="used">Used</button></div></div>
   <div id="app"><div class="msg">Loading…</div></div>
-  <p class="legend">Counts 08:00–24:00 as your possible working time · tick on a bar = even pace now</p>
+  <p class="legend">08:00–24:00 counts as working time for the week · ▼ = even pace now</p>
   <footer id="foot"></footer>
 </main>
 <script>
@@ -118,15 +133,6 @@ if (!/^[0-9a-f]{20,40}$/i.test(gistId)) gistId = "";
 try { if (gistId) localStorage.setItem("gist", gistId); else gistId = localStorage.getItem("gist") || ""; } catch {}
 
 let etag = null, data = null, backoff = 0, timer = null, lastPoll = 0, problem = null;
-let view = "left";                                  // "left" (default) or "used"; remembered per device
-try { if (localStorage.getItem("view") === "used") view = "used"; } catch {}
-function setView(v){
-  view = v; try { localStorage.setItem("view", v); } catch {}
-  document.querySelectorAll(".seg button").forEach(b => b.classList.toggle("on", b.dataset.view === view));
-  if (data) render();
-}
-document.querySelectorAll(".seg button").forEach(b => b.addEventListener("click", () => setView(b.dataset.view)));
-setView(view);
 
 // ---- Working-time helpers (local time) ----
 const WORK_START = 8, WORK_END = 24;            // 08:00–24:00; night is ignored
@@ -166,7 +172,9 @@ function addWorkMs(t, ms){
 // ---- Pace over the whole window (average since window start) ----
 function pace(k, used, resetsAt){
   const now = Date.now(), end = Date.parse(resetsAt), start = end - windowLen(k);
-  const done = workMs(start, now), left = workMs(now, end), total = done + left;
+  const sess = isSession(k);                       // session: real time · week: 08–24 working time
+  const done = sess ? Math.max(0, Math.min(now, end) - start) : workMs(start, now);
+  const left = sess ? Math.max(0, end - now) : workMs(now, end), total = done + left;
   const res = { expected: total ? done / total * 100 : 0, workLeft: left, end };
   if (left <= 0)          return { ...res, projected: used, state: 0, offHours: true };
   if (done < 15 * 60_000) return { ...res, projected: null, state: used >= 50 ? 3 : 0, fresh: true };
@@ -218,7 +226,7 @@ function eta(k, used, end, rr){
 
 // ---- Day plan: future days keep the normal allowance, today gets the rest ----
 // Normal allowance = 100% spread evenly over the week's working time (08–24, ≈112 h → ~14.3% per full day).
-// Surplus (you're under pace) goes to today. Deficit: today gets 0 and the next days shrink evenly.
+// Surplus (you're under pace) goes to today. Deficit: today gets 0 and the overrun eats the next days in order.
 function dayPlan(left, end){
   const now = Date.now(), W = workMs(end - 7 * 24 * H, end);
   if (W <= 0 || workMs(now, end) <= 0) return null;
@@ -233,7 +241,11 @@ function dayPlan(left, end){
   const futureDef = future.reduce((a, p) => a + p.def, 0);
   let mode;
   if (left >= futureDef) { mode = "surplus"; future.forEach(p => p.share = p.def); today.share = left - futureDef; }
-  else { mode = "deficit"; today.share = 0; future.forEach(p => p.share = p.def * left / futureDef); }
+  else {                                          // over today's budget: eat the next days in order, don't spread it
+    mode = "deficit"; today.share = 0;
+    let over = futureDef - left;
+    future.forEach(p => { const eat = Math.min(p.def, Math.max(0, over)); p.share = p.def - eat; p.eaten = eat; over -= eat; });
+  }
   return { days, mode, today: today.share, perDay: 100 * DAY_WORK / W };
 }
 // Session-% you could still use before midnight if you worked nonstop (current session + new ones every 5 h)
@@ -414,8 +426,8 @@ function render(){
     (cards || `<div class="card msg">No usage windows in the response.</div>`);
 
   const s = items.find(x => x.k === "five_hour"), w = items.find(x => x.k === "seven_day");
-  const tv = x => Math.round(view === "left" ? 100 - x.used : x.used);
-  document.title = [s && `${tv(s)}%`, w && `${tv(w)}%`].filter(Boolean).join(" · ") + ` ${view} — Claude usage`;
+  const tv = x => Math.round(100 - x.used);
+  document.title = [s && `${tv(s)}%`, w && `${tv(w)}%`].filter(Boolean).join(" · ") + " left — Claude usage";
   tick();
 }
 
@@ -467,9 +479,16 @@ function headline(items){
     if (wk.left <= 0.05) {
       if (wk.lastDay) text = `The week is used up until the reset at <b>${fmtWhen(it.pc.end)}</b>.`;
       else {
-        const nxt = wk.plan.days.find(p => p.i > 0 && !p.until) || wk.plan.days[1];
-        text = `${what[0].toUpperCase() + what.slice(1)} budget is used up: anything more comes out of the next days` +
-          (nxt ? ` (now <b>~${num(nxt.share)}%</b> per full day instead of ${num(wk.plan.perDay)}%).` : ".");
+        const What = what[0].toUpperCase() + what.slice(1);
+        const eaten = wk.plan.days.filter(p => p.i > 0 && p.eaten > 0.05);
+        if (!eaten.length) text = `${What} budget is used up: anything more comes out of ${longDay(wk.plan.days[1])}'s allowance.`;
+        else {
+          const last = eaten[eaten.length - 1], whole = eaten.slice(0, -1).map(longDay);
+          text = `${What} budget is used up and you've already spent ` + (whole.length ? `all of ${whole.join(" and ")}'s and ` : "") +
+            `<b>${num(last.eaten)}%</b> of ${longDay(last)}'s allowance (<b>${num(last.share)} of ${num(last.def)}%</b> left).`;
+          const nxt = wk.plan.days.find(p => p.i > last.i);
+          if (nxt) text += ` ${longDay(nxt)} keeps its ${num(nxt.def)}%.`;
+        }
       }
     } else {
       text = `At your last-hour rate (<b>+${num(wk.rate * H)}%/h</b>), ${what} <b>${num(wk.left)}%</b> ` +
@@ -490,7 +509,10 @@ function headline(items){
   let title, hue, sub;
   if (top && top.sev === 2) { title = "Slow down"; hue = 5; }
   else if (top && top.sev === 1) { title = top.from === "session" ? "Pace the session" : "Watch today's budget"; hue = 35; }
-  if (top) sub = top.text + (top.from === "session" && todayTxt ? " " + todayTxt : "");
+  if (top) {                                    // show up to two equally urgent messages (e.g. session + week)
+    const same = msgs.filter(m => m.sev === top.sev).slice(0, 2);
+    sub = same.map(m => m.text).join(" ") + (same.every(m => m.from === "session") && todayTxt ? " " + todayTxt : "");
+  }
   else { title = "Spend freely"; hue = 140; sub = todayTxt ? `${todayTxt} ${rollTxt}` : "Within your limits on every window."; }
   return `<div class="card head" style="--c:${hueColor(hue)}">
     <div class="head-t"><span class="pdot"></span>${title}</div>
@@ -506,60 +528,83 @@ function lastHourRow(e, render){
   return [span >= 55 ? "Last hour" : `Last ${span}m`, txt, cls];
 }
 
+// ---- Bars: grey = used · ▼ = where usage should be now at an even pace ----
+// Ahead: blue spare up to ▼, green after · behind: striped shortfall, everything left red · within ±3%: on pace (green)
+const TOL = 3;
+const clamp = x => Math.max(0, Math.min(100, x));
+function meter(used, mark, extra){
+  used = clamp(used);
+  if (mark == null) return { cls: "ok", d: 0, html: `<div class="meter"><div class="mtrack"><div class="mseg green" style="left:${used}%;width:${100 - used}%"></div>${extra || ""}</div></div>` };
+  mark = clamp(mark);
+  const d = mark - used; let segs, cls;
+  if (d >= TOL) { cls = "ahead"; segs = `<div class="mseg blue" style="left:${used}%;width:${d}%"></div><div class="mseg green" style="left:${mark}%;width:${100 - mark}%"></div>`; }
+  else if (d <= -TOL) { cls = "behind"; segs = `<div class="mseg gap" style="left:${mark}%;width:${-d}%"></div><div class="mseg red" style="left:${used}%;width:${100 - used}%"></div>`; }
+  else { cls = "ok"; segs = `<div class="mseg green" style="left:${used}%;width:${100 - used}%"></div>`; }
+  return { cls, d, html: `<div class="meter"><div class="mtrack">${segs}${extra || ""}</div><div class="mark" style="left:${mark}%" title="Even pace now"></div></div>` };
+}
+function paceTxt(m){
+  return m.cls === "ahead" ? `<b class="k">+${num(m.d)}%</b> ahead of pace`
+    : m.cls === "behind" ? `<b class="k">−${num(-m.d)}%</b> behind pace` : `<b class="k">On pace</b>`;
+}
+const letter = p => p.day.toLocaleDateString([], {weekday: "narrow"});
+const longDay = p => p.day.toLocaleDateString([], {weekday: "long"});
+
 function card(it, primary){
-  const { k, used, pc, eta: e, proj, state, wk } = it;
-  const L = view === "left";
-  const reset = u_reset(k);
-  let marker = "", paceHtml = "";
-  if (pc) {
-    marker = `<div class="ideal" style="left:${(L ? 100 - pc.expected : pc.expected).toFixed(1)}%" title="Even pace now"></div>`;
-    const rows = [], left = 100 - used, cost = sessionCost();
-    let pill, gauge = "", planHtml = "";
+  const { k, used, pc, eta: e, wk } = it;
+  const r = data.usage[k].resets_at;
+  const meta = `<div class="meta">${Math.round(used)}% used${r ? ` · resets in <span data-reset="${esc(r)}"></span>` : ""}</div>`;
+  const rows = [], cost = sessionCost();
+  let body = "";
 
-    if (isSession(k)) {
-      // ---- 5-hour session: will it run out before it resets? ----
-      pill = `<span class="pill" style="--c:${paceColor(proj)}"><span class="pdot"></span>${pc.offHours ? "Resets overnight" : proj == null ? "Just started" : PACE[state]}</span>`;
-      gauge = `<div class="pace-gauge" title="Projected % at reset (worse of average and last hour): 40% left → 140% right"><div class="pace-needle" style="left:${Math.min(100, Math.max(0, ((proj ?? 40) - 40)))}%"></div></div>`;
-      if (pc.offHours) rows.push(["Note", `Resets before 08:00. Use what's left freely.`]);
-      if (k === "five_hour" && cost) rows.push(["Cost", `1 full session ≈ <b>${num(cost)}%</b> of your week`]);
-      if (pc.fresh) rows.push(["Avg pace", `<span class="sub">window just started</span>`]);
-      else if (!pc.offHours) rows.push(["Avg pace", pc.projected >= 100 ? `<b>runs out</b> before reset`
-        : L ? `<b>~${Math.round(100 - pc.projected)}%</b> left at reset` : `<b>~${Math.round(pc.projected)}%</b> used at reset`]);
-      rows.push(lastHourRow(e, r => e.before ? [`${r} → runs out <b>${fmtWhen(e.t)}</b>`, "bad"] : [`${r} → won't run out before reset`, "good"]));
-    } else if (wk) {
-      // ---- Weekly window: today's budget; next days keep the normal share ----
-      pill = `<span class="pill" style="--c:${hueColor(WK_HUE[wk.level])}"><span class="pdot"></span>${wkPill(wk)}</span>`;
-      const plan = wk.plan;
-      const room = sessionRoomToday(), cap = cost && room != null ? room / 100 * cost : null;
-      const capped = k === "seven_day" && cap != null && wk.left > 0.05 && cap < wk.left - 0.5;
-      if (k === "seven_day") {
-        const cap1 = plan.days.length === 1 ? `Remaining <b>${num(left)}%</b> is all yours until the reset`
-          : plan.mode === "surplus" ? `Remaining <b>${num(left)}%</b>: the next days keep the normal <b>${num(plan.perDay)}%</b> per full day, today gets the rest`
-          : `Remaining <b>${num(left)}%</b> is less than the normal share for the days left, so the next days are reduced`;
-        const t = ms => new Date(ms).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
-        planHtml = `<div class="plan-cap">${cap1}</div>
-          <div class="plan">${plan.days.map(p => `<div class="${p.i === 0 ? "today" : ""}"><div class="d">${dayName(p)}${p.until ? ` →${t(p.until)}` : ""}</div><div class="v">${Math.round(p.share)}%</div>${p.i === 0 && capped ? `<div class="c">max ~${Math.round(cap)}%</div>` : ""}</div>`).join("")}</div>`;
-      }
-      rows.push(["Today", `<b>${num(wk.left)}%</b>` +
-        (k === "seven_day" && cost && wk.left > 0.05 ? ` <span class="sub">· ${sessions(wk.left, cost)}</span>` : "") +
-        (capped ? ` <span class="sub">· 5-hour limit: ~${num(cap)}% before 24:00</span>` : "")]);
-      rows.push(lastHourRow(e, r => {
-        if (wk.left <= 0.05) return [`${r} → today's budget is used up`, "bad"];
-        if (wk.level === 2) return [`${r} → today's ${num(wk.left)}% runs out <b>${fmtWhen(wk.runsOut)}</b>`, "bad"];
-        if (wk.level === 1) return [`${r} → today's ${num(wk.left)}% lasts until <b>~${fmtApprox(wk.runsOut)}</b>`, "warn"];
-        return [`${r} → today's ${num(wk.left)}% lasts ${wk.lastDay ? "until the reset" : "past midnight"}`, "good"];
-      }));
-    } else {
-      pill = `<span class="pill" style="--c:${hueColor(140)}"><span class="pdot"></span>—</span>`;
+  if (pc && isSession(k)) {
+    // ---- 5-hour session: ▼ = share of the 5 hours already gone (real time) ----
+    const m = meter(used, pc.expected);
+    body = m.html + meta + `<div class="mpace ${m.cls}">${paceTxt(m)}</div>`;
+    if (k === "five_hour" && cost) rows.push(["Cost", `1 full session ≈ <b>${num(cost)}%</b> of your week`]);
+    rows.push(lastHourRow(e, x => e.before ? [`${x} → runs out <b>${fmtWhen(e.t)}</b>`, "bad"] : [`${x} → won't run out before reset`, "good"]));
+  } else if (pc && wk) {
+    // ---- Weekly window: today's slot, then one slot per remaining day at its normal allowance ----
+    const plan = wk.plan, today = plan.days[0], future = plan.days.slice(1);
+    const b0 = 100 - future.reduce((a, p) => a + p.def, 0);           // where tomorrow's slot starts
+    const todayLeft = Math.max(0, b0 - used);
+    let x = b0, seps = "", lbls = "";
+    if (todayLeft >= 4) lbls += `<div class="day today" style="left:${(clamp(used) + b0) / 2}%"><span>${letter(today)}</span><b>${Math.round(todayLeft)}%</b></div>`;
+    for (const p of future) {
+      const s = x; x += p.def;
+      seps += `<div class="msep" style="left:${s}%"></div>`;
+      const cut = (p.eaten || 0) > 0.5;
+      if (p.def >= 4) lbls += `<div class="day${cut ? " cut" : ""}" style="left:${(s + x) / 2}%">${letter(p)}<b>${cut ? `${Math.round(p.share)}/${Math.round(p.def)}%` : `${Math.round(p.def)}%`}</b></div>`;
     }
+    const m = meter(used, pc.expected, seps);
+    let extra;
+    if (plan.mode === "deficit") {
+      const ate = future.reduce((a, p) => a + (p.eaten || 0), 0), first = future.find(p => p.eaten > 0.05);
+      extra = ate > 0.05 && first ? ` · today used up, <b class="bad">${num(ate)}%</b> of ${longDay(first)}${ate > first.def + 0.05 ? " and after" : ""} already spent` : " · today used up";
+    } else if (m.cls === "ahead") extra = ` · today ${num(todayLeft)}% (${num(m.d)} spare + ${num(today.def)} normal)`;
+    else if (m.cls === "behind") extra = ` · today ${num(todayLeft)}% left of its normal ${num(today.def)}%`;
+    else extra = ` · today ${num(todayLeft)}%`;
+    body = m.html + `<div class="days">${lbls}</div>` + meta + `<div class="mpace ${m.cls}">${paceTxt(m)}${extra}</div>`;
 
-    paceHtml = `<div class="pace">${pill}${gauge || `<div style="height:4px"></div>`}
-      ${planHtml}<dl class="kv">${rows.map(([a, b, cls]) => `<dt>${a}</dt><dd${cls ? ` class="${cls}"` : ""}>${b}</dd>`).join("")}</dl></div>`;
+    const room = sessionRoomToday(), cap = cost && room != null ? room / 100 * cost : null;
+    const capped = k === "seven_day" && cap != null && wk.left > 0.05 && cap < wk.left - 0.5;
+    rows.push(["Today", `<b>${num(wk.left)}%</b>` +
+      (k === "seven_day" && cost && wk.left > 0.05 ? ` <span class="sub">· ${sessions(wk.left, cost)}</span>` : "") +
+      (wk.left <= 0.05 ? ` <span class="sub">· nothing left today</span>` : "") +
+      (capped ? ` <span class="sub">· 5-hour limit: ~${num(cap)}% before 24:00</span>` : "")]);
+    rows.push(lastHourRow(e, x => {
+      if (wk.left <= 0.05) return [`${x} → today's budget is used up`, "bad"];
+      if (wk.level === 2) return [`${x} → today's ${num(wk.left)}% runs out <b>${fmtWhen(wk.runsOut)}</b>`, "bad"];
+      if (wk.level === 1) return [`${x} → today's ${num(wk.left)}% lasts until <b>~${fmtApprox(wk.runsOut)}</b>`, "warn"];
+      return [`${x} → today's ${num(wk.left)}% lasts ${wk.lastDay ? "until the reset" : "past midnight"}`, "good"];
+    }));
+  } else {
+    body = meter(used, null).html + meta;
   }
+
+  const kv = rows.length ? `<dl class="kv kvbox">${rows.map(([a, b, cls]) => `<dt>${a}</dt><dd${cls ? ` class="${cls}"` : ""}>${b}</dd>`).join("")}</dl>` : "";
   return `<div class="card${primary ? " primary" : ""}">
-    <div class="row"><span class="label">${esc(LABELS[k])}</span><span class="pct">${Math.round(L ? 100 - used : used)}%<small>${L ? "left" : "used"}</small></span></div>
-    <div class="bar"><div class="fill ${level(used)}" style="width:${L ? 100 - used : used}%"></div>${marker}</div>
-    <div class="reset">${Math.round(L ? used : 100 - used)}% ${L ? "used" : "left"}${reset ? " · " + reset : ""}</div>${paceHtml}</div>`;
+    <div class="row"><span class="label">${esc(LABELS[k])}</span><span class="pct">${Math.round(100 - used)}%<small>left</small></span></div>
+    ${body}${kv}</div>`;
 }
 function u_reset(k){
   const r = data.usage[k].resets_at;
@@ -574,7 +619,7 @@ function tick(){
   if (data && data.updated_at) document.getElementById("ago").textContent = "Updated " + fmtAgo(Date.now() - Date.parse(data.updated_at));
 }
 setInterval(tick, 15_000);
-const VERSION = "v12 · 22 Oct 22:15";
+const VERSION = "v13 · 25 Oct 10:00";
 document.getElementById("foot").textContent = `${VERSION} · Mac checks every 3 min · page refreshes every 3 min`;
 poll();
 </script>
