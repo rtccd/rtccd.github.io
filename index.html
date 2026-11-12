@@ -32,7 +32,8 @@
   main{max-width:520px;margin:0 auto}
   header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:14px}
   h1{font-size:20px;font-weight:650;letter-spacing:-.01em}
-  .status{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px}
+  .status{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:7px}
+  .times{text-align:right;line-height:1.35;font-variant-numeric:tabular-nums}
   .dot{width:8px;height:8px;border-radius:50%;background:var(--ok)}
   .dot.stale{background:var(--warn)} .dot.err{background:var(--hot)}
   .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:12px}
@@ -109,7 +110,7 @@
 <main>
   <header>
     <h1>Claude usage</h1>
-    <div class="status"><span class="dot" id="dot"></span><span id="ago">—</span></div>
+    <div class="status"><span class="dot" id="dot"></span><div class="times"><div id="ago" title="Last successful read from Anthropic (done by your Mac)">Anthropic: —</div><div id="pageago" title="Last time this page fetched fresh data">Page: —</div></div></div>
   </header>
   <div id="app"><div class="msg">Loading…</div></div>
   <p class="legend">08:00–24:00 counts as working time for the week · ▼ = even pace now</p>
@@ -119,13 +120,14 @@
 const LABELS = {
   five_hour: "Session · 5 hours",
   seven_day: "Week · all models",
+  seven_day_fable: "Week · Fable",
   seven_day_opus: "Week · Opus",
   seven_day_sonnet: "Week · Sonnet",
   seven_day_cowork: "Week · Cowork",
   seven_day_oauth_apps: "Week · Connected apps",
 };
 const SHORT = { five_hour: "Session", seven_day: "Week" };
-const POLL_MS = 180_000, STALE_MS = 10 * 60_000;   // GitHub allows 60 anonymous reads/hour per network
+const POLL_MS = 180_000, STALE_MS = 12 * 60_000;   // Mac checks every 5 min   // GitHub allows 60 anonymous reads/hour per network
 const RECENT_MS = 60 * 60_000, RECENT_MIN_MS = 15 * 60_000;   // recent rate: last hour, needs ≥15 min of data
 const app = document.getElementById("app");
 let gistId = location.hash.slice(1);
@@ -133,6 +135,7 @@ if (!/^[0-9a-f]{20,40}$/i.test(gistId)) gistId = "";
 try { if (gistId) localStorage.setItem("gist", gistId); else gistId = localStorage.getItem("gist") || ""; } catch {}
 
 let etag = null, data = null, backoff = 0, timer = null, lastPoll = 0, problem = null;
+let pageAt = 0;                                      // when this page last fetched fresh data
 
 // ---- Working-time helpers (local time) ----
 const WORK_START = 8, WORK_END = 24;            // 08:00–24:00; night is ignored
@@ -326,12 +329,12 @@ async function poll(){
     backoff = Math.min((backoff || 30_000) * 2, 5 * 60_000);
     return finish();
   }
-  if (r.status === 304) { backoff = 0; problem = null; }
+  if (r.status === 304) { backoff = 0; problem = null; pageAt = Date.now(); }
   else if (r.ok) {
     const g = await r.json();
     const f = g.files && g.files["usage.json"];
     try {
-      data = JSON.parse(f.content);
+      data = JSON.parse(f.content); pageAt = Date.now();
       etag = r.headers.get("ETag"); backoff = 0; problem = null;
     } catch (e) {
       etag = null; backoff = 60_000;
@@ -377,7 +380,8 @@ function render(){
   const macQuiet = macAge > STALE_MS && !(retryAt && now < retryAt + 2 * 60_000);   // not just waiting out a back-off
   const warn = typeof data.warning_http === "number" || !!data.warning;
   dot.className = "dot" + (data.status === "error" || data.warning ? " err" : (warn || macQuiet) ? " stale" : "");
-  ago.textContent = "Updated " + fmtAgo(age);
+  ago.textContent = "Anthropic: " + fmtAgo(age);
+  if (pageAt) document.getElementById("pageago").textContent = "Page: " + fmtAgo(now - pageAt);
   const next = retryAt > now ? ` Next check at <b>${fmtWhen(retryAt)}</b>.` : "";
   const loginMsg = w => (w === "logged_out"
       ? "Claude Code is logged out on your Mac. Run <b>claude</b> in Terminal there and log in."
@@ -616,11 +620,12 @@ function tick(){
     const t = Date.parse(el.dataset.reset);
     if (!isNaN(t)) el.textContent = `${fmtDur(t - Date.now())} · ${fmtWhen(t)}`;
   });
-  if (data && data.updated_at) document.getElementById("ago").textContent = "Updated " + fmtAgo(Date.now() - Date.parse(data.updated_at));
+  if (data && data.updated_at) document.getElementById("ago").textContent = "Anthropic: " + fmtAgo(Date.now() - Date.parse(data.updated_at));
+  if (pageAt) document.getElementById("pageago").textContent = "Page: " + fmtAgo(Date.now() - pageAt);
 }
-setInterval(tick, 15_000);
-const VERSION = "v13 · 25 Oct 10:00";
-document.getElementById("foot").textContent = `${VERSION} · Mac checks every 3 min · page refreshes every 3 min`;
+setInterval(tick, 10_000);
+const VERSION = "v14 · 12 Nov 07:30";
+document.getElementById("foot").textContent = `${VERSION} · Mac checks every 5 min · page refreshes every 3 min`;
 poll();
 </script>
 </body>
